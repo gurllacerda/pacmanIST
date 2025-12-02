@@ -14,7 +14,7 @@ A
 A
 D
 T 2
-W
-S
-S
-S
+A
+D
+A
+D
