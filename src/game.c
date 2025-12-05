@@ -8,12 +8,16 @@
 #include <fcntl.h>
 #include <errno.h>
 #include "parser.c"
+#include <sys/types.h>
+#include <sys/wait.h>
 
 #define CONTINUE_PLAY 0
 #define NEXT_LEVEL 1
 #define QUIT_GAME 2
 #define LOAD_BACKUP 3
 #define CREATE_BACKUP 4
+
+static int backup_exists = 0; // 0 -> não há backup; 1 -> já há backup
 
 void screen_refresh(board_t *game_board, int mode)
 {
@@ -37,6 +41,15 @@ int play_board(board_t *game_board)
 
         if (c.command == '\0')
             return CONTINUE_PLAY;
+
+        if (c.command == 'G')
+        {
+            // Só deixa criar backup se ainda não existir nenhum
+            if (!backup_exists)
+                return CREATE_BACKUP;
+            else
+                return CONTINUE_PLAY; // ignora se já houver backup
+        }
 
         c.turns = 1;
         play = &c;
@@ -146,6 +159,56 @@ int main(int argc, char **argv)
         {
             int result = play_board(&game_board);
 
+            if (result == CREATE_BACKUP)
+            {
+                // Só cria backup se ainda não existir nenhum
+                if (!backup_exists)
+                {
+                    pid_t pid = fork();
+                    if (pid < 0)
+                    {
+                        perror("fork");
+                        // Não conseguimos criar backup, continuamos o jogo normalmente
+                    }
+                    else if (pid > 0)
+                    {
+                        // === Processo PAI ===
+                        // Este processo fica como "snapshot" à espera do filho
+                        int status;
+                        backup_exists = 1;
+
+                        waitpid(pid, &status, 0);
+
+                        // Se o filho terminou porque o Pacman morreu -> reencarnar
+                        if (WIFEXITED(status) && WEXITSTATUS(status) == 1)
+                        {
+                            // voltar a não ter backup ativo
+                            backup_exists = 0;
+
+                            // Recomeçar este nível a partir do estado guardado
+                            screen_refresh(&game_board, DRAW_MENU);
+                            continue; // volta ao topo do while(true) com o mesmo game_board
+                        }
+                        else
+                        {
+                            // O filho terminou por vitória, por 'Q' ou outro motivo -> sai do jogo
+                            quit_game = true;
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        // === Processo FILHO ===
+                        // Este continua o jogo ativo a partir do estado atual
+                        backup_exists = 1; // para impedir novo 'G'
+                        continue;          // volta ao topo e joga normalmente
+                    }
+                }
+
+                // Já existia backup: ignora novo 'G'
+                continue;
+            }
+
             if (result == NEXT_LEVEL)
             {
                 screen_refresh(&game_board, DRAW_WIN);
@@ -162,6 +225,13 @@ int main(int argc, char **argv)
             {
                 screen_refresh(&game_board, DRAW_GAME_OVER);
                 sleep_ms(game_board.tempo);
+
+                // se existe backup e o Pacman está morto, sinaliza ao pai para reencarnar
+                if (backup_exists && !game_board.pacmans[0].alive)
+                {
+                    _exit(1); // código 1 = Pacman morto com backup
+                }
+
                 quit_game = true; // Marca para sair de tudo
                 break;
             }

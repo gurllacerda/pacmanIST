@@ -5,7 +5,7 @@ DIM 6 6
 TEMPO 100
 # PAC: (opcional) indica o nome do ficheiro do pacman deste nível
 # MON: indica os nomes dos ficheiros de monstros usados neste nível
-MON 1.m 3.m
+MON 1.m 2.m
 # o ficheiro termina com o conteúdo da matriz de jogo em que "X"
 # representa uma parede, "o" representa um espaço de circulação
 # e “@” representa o portal
