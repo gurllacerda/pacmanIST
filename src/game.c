@@ -164,7 +164,7 @@ int main(int argc, char **argv)
                 // Só cria backup se ainda não existir nenhum
                 if (!backup_exists)
                 {
-                    pid_t pid = fork();
+                    int pid = fork();
                     if (pid < 0)
                     {
                         perror("fork");
@@ -177,7 +177,7 @@ int main(int argc, char **argv)
                         int status;
                         backup_exists = 1;
 
-                        waitpid(pid, &status, 0);
+                        wait(&status);
 
                         // Se o filho terminou porque o Pacman morreu -> reencarnar
                         if (WIFEXITED(status) && WEXITSTATUS(status) == 1)
