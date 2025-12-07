@@ -162,7 +162,7 @@ int load_level_from_file(const char *filepath, board_t *board, const char *base_
         perror("Erro ao abrir ficheiro de nível");
         return -1;
     }
-
+    memset(board, 0, sizeof(board_t));
     char token[128];
     // Valores default
     board->n_pacmans = 0;
@@ -224,7 +224,7 @@ int load_level_from_file(const char *filepath, board_t *board, const char *base_
                 }
                 else
                 {
-                    // Este token é a primeira linha do mapa
+                    // Este token é a primeira linha do lvl
                     int row = 0;
                     int col = 0;
 
@@ -293,6 +293,12 @@ int load_level_from_file(const char *filepath, board_t *board, const char *base_
         board->pacmans[0].pos_x = 1;
         board->pacmans[0].pos_y = 1;
     }
+    if (pthread_rwlock_init(&board->mutex, NULL) != 0)
+    {
+        perror("Erro ao inicializar lock do tabuleiro");
+        return -1;
+    }
+    board->game_running = 1;
 
     close(fd);
     return 0;

@@ -1,8 +1,10 @@
 # Compiler variables
 CC = gcc
-CFLAGS = -g -Wall -Wextra -Werror -std=c17 -D_POSIX_C_SOURCE=200809L
-LDFLAGS = -lncurses
+CFLAGS = -g -Wall -Wextra -Werror -std=c17 -D_POSIX_C_SOURCE=200809L 
+LDFLAGS = -lncurses 
 
+# CFLAGS = -g -Wall -Wextra -Werror -std=c17 -D_POSIX_C_SOURCE=200809L -fsanitize=thread
+# LDFLAGS = -lncurses -fsanitize=thread -no-pie
 # Directory variables
 SRC_DIR = src
 OBJ_DIR = obj
@@ -36,8 +38,9 @@ $(BIN_DIR)/$(TARGET): $(OBJS) | folders
 	$(CC) -I $(INCLUDE_DIR) $(CFLAGS) -o $(OBJ_DIR)/$@ -c $<
 
 # run the program
+# add situations because it is our dir folder 
 run: pacmanist
-	@./$(BIN_DIR)/$(TARGET)
+	@./$(BIN_DIR)/$(TARGET) situations
 
 # Create folders
 folders:
@@ -52,3 +55,11 @@ clean:
 
 # indentify targets that do not create files
 .PHONY: all clean run folders
+
+# Executar com GDB
+gdb: pacmanist
+	gdb --args ./$(BIN_DIR)/$(TARGET) situations
+
+# Executar com Valgrind (guarda log em ficheiro)
+valgrind: pacmanist
+	valgrind --leak-check=full --track-origins=yes --log-file=valgrind-log.txt ./$(BIN_DIR)/$(TARGET) situations

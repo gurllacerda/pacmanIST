@@ -71,7 +71,10 @@ int play_board(board_t *game_board)
         return QUIT_GAME;
     }
 
+    pthread_rwlock_wrlock(&game_board->mutex);
     int result = move_pacman(game_board, 0, play);
+    pthread_rwlock_unlock(&game_board->mutex);
+
     if (result == REACHED_PORTAL)
     {
         // Next level
@@ -83,16 +86,16 @@ int play_board(board_t *game_board)
         return QUIT_GAME;
     }
 
-    for (int i = 0; i < game_board->n_ghosts; i++)
-    {
-        ghost_t *ghost = &game_board->ghosts[i];
-        // avoid buffer overflow wrapping around with modulo of n_moves
-        // this ensures that we always access a valid move for the ghost
-        if (ghost->n_moves > 0)
-        {
-            move_ghost(game_board, i, &ghost->moves[ghost->current_move % ghost->n_moves]);
-        }
-    }
+    // for (int i = 0; i < game_board->n_ghosts; i++)
+    // {
+    //     ghost_t *ghost = &game_board->ghosts[i];
+    //     // avoid buffer overflow wrapping around with modulo of n_moves
+    //     // this ensures that we always access a valid move for the ghost
+    //     if (ghost->n_moves > 0)
+    //     {
+    //         move_ghost(game_board, i, &ghost->moves[ghost->current_move % ghost->n_moves]);
+    //     }
+    // }
 
     if (!game_board->pacmans[0].alive)
     {
@@ -101,6 +104,37 @@ int play_board(board_t *game_board)
 
     return CONTINUE_PLAY;
 }
+
+void *ghost_thread(void *arg)
+{
+    ghost_t *ghost = (ghost_t *)arg;
+    board_t *board = (board_t *)ghost->board_ref;
+
+    while (board->game_running && board->pacmans[0].alive)
+    {
+        pthread_rwlock_wrlock(&board->mutex);
+
+        // double check pois o jogo pode acabar enquanteo esperamos pelo lock
+        if (!board->game_running)
+        {
+            pthread_rwlock_unlock(&board->mutex);
+            break;
+        }
+
+        if (ghost->n_moves > 0)
+        {
+            move_ghost(board, ghost->id, &ghost->moves[ghost->current_move % ghost->n_moves]);
+        }
+
+        pthread_rwlock_unlock(&board->mutex);
+
+        // se tempo do board > 0 usa o tempo do board senão 100
+        int sleep_time = (board->tempo > 0) ? board->tempo : 100;
+        sleep_ms(sleep_time);
+    }
+
+    return NULL;
+};
 
 int main(int argc, char **argv)
 {
@@ -132,8 +166,6 @@ int main(int argc, char **argv)
     int accumulated_points = 0;
     int current_level_idx = 0;
     bool quit_game = false;
-    // bool end_game = false;
-    // board_t game_board;
 
     while (current_level_idx < num_levels && !quit_game)
     {
@@ -147,12 +179,26 @@ int main(int argc, char **argv)
         {
             break; // Erro ao carregar nível
         }
+
+        for (int i = 0; i < game_board.n_ghosts; i++)
+        {
+            game_board.ghosts[i].board_ref = (struct board_t *)&game_board; // Ponteiro para o pai
+            game_board.ghosts[i].id = i;
+
+            if (pthread_create(&game_board.ghosts[i].thread_id, NULL, ghost_thread, &game_board.ghosts[i]) != 0)
+            {
+                perror("Erro ao criar thread do fantasma");
+            }
+        }
         if (game_board.n_pacmans > 0)
         {
             game_board.pacmans[0].points = accumulated_points;
         }
 
+        pthread_rwlock_rdlock(&game_board.mutex);
         draw_board(&game_board, DRAW_MENU);
+        pthread_rwlock_unlock(&game_board.mutex);
+
         refresh_screen();
 
         while (true)
@@ -240,6 +286,16 @@ int main(int argc, char **argv)
 
             // Atualiza pontos locais para visualização
             accumulated_points = game_board.pacmans[0].points;
+        }
+
+        pthread_rwlock_wrlock(&game_board.mutex);
+        game_board.game_running = 0;
+        pthread_rwlock_unlock(&game_board.mutex);
+
+        // Esperar que cada fantasma termine (Join)
+        for (int i = 0; i < game_board.n_ghosts; i++)
+        {
+            pthread_join(game_board.ghosts[i].thread_id, NULL);
         }
 
         // Limpa a memória do nível que acabou de ser jogado antes de carregar o próximo
