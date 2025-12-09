@@ -113,6 +113,7 @@ void load_entity_behavior(const char *path, board_t *board, char type, int index
                 p->pos_y = atoi(row);
                 p->pos_x = atoi(col);
                 p->alive = 1;
+                board->board[p->pos_y * board->width + p->pos_x].content = 'P';
             }
             else
             {
@@ -190,14 +191,17 @@ int load_level_from_file(const char *filepath, board_t *board, const char *base_
             get_next_token(fd, t, sizeof(t));
             board->tempo = atoi(t);
         }
+
         else if (strcmp(token, "PAC") == 0)
         {
             get_next_token(fd, board->pacman_file, sizeof(board->pacman_file));
             board->n_pacmans = 1;
+            // debug("entrou no ficheiro do pac");
 
             // Carregar comportamento do Pacman
             char full_path[512];
             snprintf(full_path, sizeof(full_path), "%s/%s", base_dir, board->pacman_file);
+
             load_entity_behavior(full_path, board, 'P', 0);
         }
         else if (strcmp(token, "MON") == 0)
@@ -276,22 +280,23 @@ int load_level_from_file(const char *filepath, board_t *board, const char *base_
                             col++;
                         }
                     }
-                    break; // Sai do loop MON
+                    break; // Sai do loop MON apenas
                 }
             }
-            break; // Sai do loop principal de tokens
         }
     }
 
     // Se não houver ficheiro .p, o Pacman é manual
+    // debug("numero de pacmans  == %i", board->n_pacmans);
     if (board->n_pacmans == 0)
     {
-        // assumindo pos 1,1 como default caso n seja especificada
         board->n_pacmans = 1;
         board->pacmans[0].n_moves = 0; // Manual
         board->pacmans[0].alive = 1;
         board->pacmans[0].pos_x = 1;
         board->pacmans[0].pos_y = 1;
+
+        board->board[1 * board->width + 1].content = 'P';
     }
     if (pthread_rwlock_init(&board->mutex, NULL) != 0)
     {

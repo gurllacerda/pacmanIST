@@ -135,46 +135,39 @@ void *pacman_thread(void *arg)
         cmd.turns = 1;
         cmd.command = '\0';
 
-        // 1. OBTER COMANDO (Seja do Automático ou do Manual)
         if (pacman->n_moves > 0)
         {
-            cmd = pacman->moves[pacman->current_move % pacman->n_moves];
+            command_t *auto_move = &pacman->moves[pacman->current_move % pacman->n_moves];
+            cmd = *auto_move;
         }
         else
         {
+            // Verifica se a Thread Main (UI) mandou alguma tecla
             pthread_rwlock_wrlock(&board->mutex);
             if (board->next_pacman_move != '\0')
             {
                 cmd.command = board->next_pacman_move;
-                board->next_pacman_move = '\0'; // Consumir comando
+                board->next_pacman_move = '\0'; // Limpa o buffer (já consumimos a tecla)
             }
             pthread_rwlock_unlock(&board->mutex);
         }
 
-        //PROCESSAR O COMANDO
-        if (cmd.command == 'Q')
+        // Se houver comando, mexer o Pacman
+        if (cmd.command != '\0')
         {
-            pthread_rwlock_wrlock(&board->mutex);
-            board->game_running = 0;
-            pthread_rwlock_unlock(&board->mutex);
-            break; 
-        }
-        else if (cmd.command != '\0')
-        {
-            // É um movimento (W, A, S, D, etc.)
             pthread_rwlock_wrlock(&board->mutex);
             int result = move_pacman(board, 0, &cmd);
             pthread_rwlock_unlock(&board->mutex);
 
+            // Se chegou ao portal, sinaliza o fim do nível parando o loop do jogo
             if (result == REACHED_PORTAL)
             {
                 pthread_rwlock_wrlock(&board->mutex);
-                board->game_running = 0; 
+                board->game_running = 0;
                 pthread_rwlock_unlock(&board->mutex);
             }
         }
 
-        // Pausa para controlar velocidade (crucial para o modo automático não ser instantâneo)
         int sleep_time = (board->tempo > 0) ? board->tempo : 100;
         sleep_ms(sleep_time);
     }
@@ -184,23 +177,28 @@ void *pacman_thread(void *arg)
 
 int main(int argc, char **argv)
 {
-    if (argc != 2) {
+    if (argc != 2)
+    {
         printf("Usage: %s <level_directory>\n", argv[0]);
-        return 1;
+        // TODO receive inputs
     }
     char *levels_directory = argv[1];
 
+    // Random seed for any random movements
     srand((unsigned int)time(NULL));
+
     open_debug_file("debug.log");
+
     terminal_init();
 
     char level_files[MAX_LEVELS][MAX_FILENAME];
     int num_levels = 0;
 
-    if (load_levels_from_dir(levels_directory, level_files, &num_levels) != 0) {
+    if (load_levels_from_dir(levels_directory, level_files, &num_levels) != 0)
+    {
         terminal_cleanup();
         close_debug_file();
-        perror("Erro: Nenhum nível encontrado.\n");
+        fprintf(stderr, "Erro: Nenhum nível encontrado ou diretoria inválida.\n");
         return 1;
     }
 
@@ -212,29 +210,40 @@ int main(int argc, char **argv)
     {
         board_t game_board;
         char full_path[512];
+
+        // Constrói o caminho completo: "alumaDiretoria/1.lvl"
         snprintf(full_path, sizeof(full_path), "%s/%s", levels_directory, level_files[current_level_idx]);
 
-        if (load_level_from_file(full_path, &game_board, levels_directory) != 0) break;
-
-        // Inicializações
-        game_board.next_pacman_move = '\0';
+        if (load_level_from_file(full_path, &game_board, levels_directory) != 0){
+            break; // Erro ao carregar nível
+        }
+        game_board.next_pacman_move = '\0'; // Limpar buffer de input
         game_board.game_running = 1;
-        if (game_board.n_pacmans > 0) game_board.pacmans[0].points = accumulated_points;
 
-        // 1. Threads Fantasmas
-        for (int i = 0; i < game_board.n_ghosts; i++) {
-            game_board.ghosts[i].board_ref = (struct board_t *)&game_board;
+        // criação das threads dos ghosts
+        for (int i = 0; i < game_board.n_ghosts; i++)
+        {
+            game_board.ghosts[i].board_ref = (struct board_t *)&game_board; // Ponteiro para o pai
             game_board.ghosts[i].id = i;
-            pthread_create(&game_board.ghosts[i].thread_id, NULL, ghost_thread, &game_board.ghosts[i]);
+
+            if (pthread_create(&game_board.ghosts[i].thread_id, NULL, ghost_thread, &game_board.ghosts[i]) != 0)
+            {
+                perror("Erro ao criar thread do fantasma");
+            }
         }
 
-        //Thread Pacman
         pthread_t pacman_tid;
         pthread_create(&pacman_tid, NULL, pacman_thread, &game_board);
+
+        if (game_board.n_pacmans > 0)
+        {
+            game_board.pacmans[0].points = accumulated_points;
+        }
 
         pthread_rwlock_rdlock(&game_board.mutex);
         draw_board(&game_board, DRAW_MENU);
         pthread_rwlock_unlock(&game_board.mutex);
+
         refresh_screen();
 
         while (true)
@@ -242,75 +251,122 @@ int main(int argc, char **argv)
             pthread_rwlock_rdlock(&game_board.mutex);
             int running = game_board.game_running;
             int is_alive = game_board.pacmans[0].alive;
-            accumulated_points = game_board.pacmans[0].points;
             pthread_rwlock_unlock(&game_board.mutex);
 
+            // Se morreu,(nesse caso sem se mexer) tratar do Game Over imediatamente
             if (!is_alive || !running)
             {
-                if (!is_alive) {
+                if (!is_alive)
+                {
                     screen_refresh(&game_board, DRAW_GAME_OVER);
                     sleep_ms(2000);
-                    if (backup_exists) _exit(1); // Backup: sinalizar morte ao pai
-                    quit_game = true;
-                } else {
-                    // Passou de nível (running=0, alive=1)
-                    screen_refresh(&game_board, DRAW_WIN);
-                    sleep_ms(1500);
-                }
-                break;
-            }
-
-            char input = get_input();
-
-            if (input == 'G') 
-            {
-                if (!backup_exists) {
-                    int pid = fork();
-                    if (pid == 0) {
-                        backup_exists = 1; // Filho continua
-                    } else if (pid > 0) {
-                        // Pai espera
-                        int status;
-                        backup_exists = 1;
-                        wait(&status);
-                        if (WIFEXITED(status) && WEXITSTATUS(status) == 1) {
-                            backup_exists = 0;
-                            screen_refresh(&game_board, DRAW_MENU);
-                            continue; // Reencarnar
-                        } else {
-                            quit_game = true;
-                            // Parar threads antes de sair
-                            pthread_rwlock_wrlock(&game_board.mutex);
-                            game_board.game_running = 0;
-                            pthread_rwlock_unlock(&game_board.mutex);
-                            break;
-                        }
+                    if (backup_exists)
+                    {
+                        _exit(1);
                     }
+                    quit_game = true;
                 }
             }
-            else if (input != '\0') 
-            {
-                pthread_rwlock_wrlock(&game_board.mutex);
-                game_board.next_pacman_move = input;
-                pthread_rwlock_unlock(&game_board.mutex);
-            }
 
-            // D. Desenhar
+            // int result = play_board(&game_board);
+
+            // if (result == CREATE_BACKUP)
+            // {
+            //     // Só cria backup se ainda não existir nenhum
+            //     if (!backup_exists)
+            //     {
+            //         int pid = fork();
+            //         if (pid < 0)
+            //         {
+            //             perror("fork");
+            //             // Não conseguimos criar backup, continuamos o jogo normalmente
+            //         }
+            //         else if (pid > 0)
+            //         {
+            //             // Este processo fica como "snapshot" à espera do filho
+            //             int status;
+            //             backup_exists = 1;
+
+            //             wait(&status);
+
+            //             // Se o filho terminou porque o Pacman morreu -> reencarnar
+            //             if (WIFEXITED(status) && WEXITSTATUS(status) == 1)
+            //             {
+            //                 // voltar a não ter backup ativo
+            //                 backup_exists = 0;
+
+            //                 // Recomeçar este nível a partir do estado guardado
+            //                 screen_refresh(&game_board, DRAW_MENU);
+            //                 continue;
+            //             }
+            //             else
+            //             {
+            //                 quit_game = true;
+            //                 break;
+            //             }
+            //         }
+            //         else
+            //         {
+            //             // Este continua o jogo ativo a partir do estado atual
+            //             backup_exists = 1; // para impedir novo 'G'
+            //             continue;
+            //         }
+            //     }
+
+            //     continue;
+            // }
+
+            // if (result == NEXT_LEVEL)
+            // {
+            //     screen_refresh(&game_board, DRAW_WIN);
+            //     sleep_ms(game_board.tempo);
+
+            //     accumulated_points = game_board.pacmans[0].points;
+
+            //     // Passa para o próximo nível na lista
+            //     current_level_idx++;
+            //     break;
+            // }
+
+            // if (result == QUIT_GAME)
+            // {
+            //     screen_refresh(&game_board, DRAW_GAME_OVER);
+            //     sleep_ms(game_board.tempo);
+
+            //     // se existe backup e o Pacman está morto, sinaliza ao pai para reencarnar
+            //     if (backup_exists && !game_board.pacmans[0].alive)
+            //     {
+            //         _exit(1); // código 1 = Pacman morto com backup
+            //     }
+
+            //     quit_game = true; // Marca para sair de tudo
+            //     break;
+            // }
+
             screen_refresh(&game_board, DRAW_MENU);
+
+            // Atualiza pontos locais para visualização
+            accumulated_points = game_board.pacmans[0].points;
         }
 
-        // Limpeza
-        game_board.game_running = 0; 
-        pthread_join(pacman_tid, NULL);
-        for (int i = 0; i < game_board.n_ghosts; i++) {
+        pthread_rwlock_wrlock(&game_board.mutex);
+        game_board.game_running = 0;
+        pthread_rwlock_unlock(&game_board.mutex);
+
+        // Esperar que cada fantasma termine (Join)
+        for (int i = 0; i < game_board.n_ghosts; i++)
+        {
             pthread_join(game_board.ghosts[i].thread_id, NULL);
         }
 
+        // Limpa a memória do nível que acabou de ser jogado antes de carregar o próximo
+        // print_board(&game_board);
         unload_level(&game_board);
-        current_level_idx++;
     }
 
     terminal_cleanup();
+
     close_debug_file();
+
     return 0;
 }

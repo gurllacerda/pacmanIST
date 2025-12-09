@@ -70,6 +70,7 @@ typedef struct
     int tempo;                          // Duration of each play
     pthread_rwlock_t mutex;
     int game_running;
+    char next_pacman_move;
 } board_t;
 
 /*Makes the current thread sleep for 'int milliseconds' miliseconds*/

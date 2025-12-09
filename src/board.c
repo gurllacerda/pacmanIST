@@ -314,6 +314,7 @@ int move_ghost(board_t *board, int ghost_index, command_t *command)
         ghost->charged = 1;
         return VALID_MOVE;
     case 'T': // Wait
+        debug("entrei");
         if (command->turns_left == 1)
         {
             ghost->current_move += 1; // move on
