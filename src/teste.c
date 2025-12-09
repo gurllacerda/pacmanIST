@@ -18,7 +18,7 @@
 #define CREATE_BACKUP 4
 
 static int backup_exists = 0; // 0 -> não há backup; 1 -> já há backup
-
+//echo 0 | sudo tee /proc/sys/kernel/randomize_va_space
 void screen_refresh(board_t *game_board, int mode)
 {
     pthread_rwlock_rdlock(&game_board->mutex);
@@ -131,43 +131,64 @@ void *pacman_thread(void *arg)
 
     while (board->game_running && pacman->alive)
     {
-        command_t cmd;
-        cmd.turns = 1;
-        cmd.command = '\0';
+        // 1. Criar um ponteiro que vamos usar para apontar para o comando certo
+        command_t *cmd_ptr = NULL;
 
+        // 2. Criar uma estrutura TEMPORÁRIA para input manual
+        // Isto resolve o Problema 1: temos memória alocada na stack
+        command_t manual_cmd;
+        manual_cmd.turns = 1;
+        manual_cmd.turns_left = 1; // Importante inicializar
+        manual_cmd.command = '\0';
+
+        // LÓGICA DE SELEÇÃO DO COMANDO
         if (pacman->n_moves > 0)
         {
-            command_t *auto_move = &pacman->moves[pacman->current_move % pacman->n_moves];
-            cmd = *auto_move;
+            // Modo Automático: Apontamos para o array existente
+            // Isto permite que o 'turns_left' seja preservado entre loops (essencial para T 2)
+            cmd_ptr = &pacman->moves[pacman->current_move % pacman->n_moves];
         }
         else
         {
-            // Verifica se a Thread Main (UI) mandou alguma tecla
+            // Modo Manual: Apontamos para a nossa variável temporária
+            cmd_ptr = &manual_cmd;
+            
             pthread_rwlock_wrlock(&board->mutex);
             if (board->next_pacman_move != '\0')
             {
-                cmd.command = board->next_pacman_move;
-                board->next_pacman_move = '\0'; // Limpa o buffer (já consumimos a tecla)
+                cmd_ptr->command = board->next_pacman_move;
+                board->next_pacman_move = '\0'; // Consumir comando
             }
             pthread_rwlock_unlock(&board->mutex);
         }
 
-        // Se houver comando, mexer o Pacman
-        if (cmd.command != '\0')
+        // PROCESSAR O COMANDO
+        if (cmd_ptr->command == 'Q')
         {
             pthread_rwlock_wrlock(&board->mutex);
-            int result = move_pacman(board, 0, &cmd);
+            board->game_running = 0;
+            pthread_rwlock_unlock(&board->mutex);
+            break; 
+        }
+        else if (cmd_ptr->command != '\0')
+        {
+            pthread_rwlock_wrlock(&board->mutex);
+            
+            // CORREÇÃO DO PROBLEMA 2:
+            // cmd_ptr já é um ponteiro, passamos diretamente (sem &)
+            int result = move_pacman(board, 0, cmd_ptr);
+            
             pthread_rwlock_unlock(&board->mutex);
 
-            // Se chegou ao portal, sinaliza o fim do nível parando o loop do jogo
             if (result == REACHED_PORTAL)
             {
                 pthread_rwlock_wrlock(&board->mutex);
-                board->game_running = 0;
+                board->game_running = 0; 
                 pthread_rwlock_unlock(&board->mutex);
             }
         }
 
+        // Pausa para controlar velocidade
         int sleep_time = (board->tempo > 0) ? board->tempo : 100;
         sleep_ms(sleep_time);
     }

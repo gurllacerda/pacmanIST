@@ -131,39 +131,34 @@ void *pacman_thread(void *arg)
 
     while (board->game_running && pacman->alive)
     {
-        command_t cmd;
-        cmd.turns = 1;
-        cmd.command = '\0';
+        command_t *cmd_ptr = NULL;
+        command_t manual_cmd;
+        manual_cmd.turns = 1;
+        manual_cmd.turns_left = 1;
+        manual_cmd.command = '\0';
 
-        // 1. OBTER COMANDO (Seja do Automático ou do Manual)
         if (pacman->n_moves > 0)
         {
-            cmd = pacman->moves[pacman->current_move % pacman->n_moves];
+            cmd_ptr = &pacman->moves[pacman->current_move % pacman->n_moves];
         }
         else
         {
+            cmd_ptr = &manual_cmd;
             pthread_rwlock_wrlock(&board->mutex);
             if (board->next_pacman_move != '\0')
             {
-                cmd.command = board->next_pacman_move;
-                board->next_pacman_move = '\0'; // Consumir comando
+                cmd_ptr->command = board->next_pacman_move;
+                board->next_pacman_move = '\0'; 
             }
             pthread_rwlock_unlock(&board->mutex);
         }
 
         //PROCESSAR O COMANDO
-        if (cmd.command == 'Q')
-        {
-            pthread_rwlock_wrlock(&board->mutex);
-            board->game_running = 0;
-            pthread_rwlock_unlock(&board->mutex);
-            break; 
-        }
-        else if (cmd.command != '\0')
+        if (cmd_ptr->command != '\0')
         {
             // É um movimento (W, A, S, D, etc.)
             pthread_rwlock_wrlock(&board->mutex);
-            int result = move_pacman(board, 0, &cmd);
+            int result = move_pacman(board, 0, cmd_ptr);
             pthread_rwlock_unlock(&board->mutex);
 
             if (result == REACHED_PORTAL)
@@ -181,6 +176,8 @@ void *pacman_thread(void *arg)
 
     return NULL;
 }
+
+
 
 int main(int argc, char **argv)
 {
@@ -261,7 +258,13 @@ int main(int argc, char **argv)
             }
 
             char input = get_input();
-
+            if (input == 'Q'){
+                pthread_rwlock_wrlock(&game_board.mutex);
+                game_board.game_running = 0;
+                quit_game = true;
+                pthread_rwlock_unlock(&game_board.mutex);
+                break; 
+            }
             if (input == 'G') 
             {
                 if (!backup_exists) {
