@@ -102,7 +102,7 @@ void *ghost_thread(void *arg)
     {
         pthread_rwlock_wrlock(&board->mutex);
 
-        // double check pois o jogo pode acabar enquanteo esperamos pelo lock
+        // double check pois o jogo pode acabar enquanto esperamos pelo lock
         if (!board->game_running)
         {
             pthread_rwlock_unlock(&board->mutex);
@@ -177,6 +177,21 @@ void *pacman_thread(void *arg)
     return NULL;
 }
 
+void ncurses_threads(board_t *game_board, int draw_mode)
+{
+    // Lock de leitura para garantir consistência do estado
+    pthread_rwlock_rdlock(&game_board->mutex);
+
+    // Desenhar o tabuleiro/estado atual
+    draw_board(game_board, draw_mode);
+
+    // Libertar o lock
+    pthread_rwlock_unlock(&game_board->mutex);
+
+    // Atualizar o ecrã ncurses
+    refresh_screen();
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 2)
@@ -232,10 +247,7 @@ int main(int argc, char **argv)
         pthread_t pacman_tid;
         pthread_create(&pacman_tid, NULL, pacman_thread, &game_board);
 
-        pthread_rwlock_rdlock(&game_board.mutex);
-        draw_board(&game_board, DRAW_MENU);
-        pthread_rwlock_unlock(&game_board.mutex);
-        refresh_screen();
+        ncurses_threads(&game_board, DRAW_MENU);
 
         while (true)
         {
