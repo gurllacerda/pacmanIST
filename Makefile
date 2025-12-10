@@ -63,3 +63,4 @@ gdb: pacmanist
 # Executar com Valgrind (guarda log em ficheiro)
 valgrind: pacmanist
 	valgrind --leak-check=full --track-origins=yes --log-file=valgrind-log.txt ./$(BIN_DIR)/$(TARGET) situations
+
