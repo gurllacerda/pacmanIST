@@ -177,19 +177,170 @@ void *pacman_thread(void *arg)
     return NULL;
 }
 
-void ncurses_threads(board_t *game_board, int draw_mode)
+// Struct para passar argumentos à thread ncurses
+typedef struct
 {
-    // Lock de leitura para garantir consistência do estado
-    pthread_rwlock_rdlock(&game_board->mutex);
+    board_t *game_board;
+    pthread_t *pacman_tid;
+    int *accumulated_points;
+    bool *quit_game;
+} ncurses_args_t;
 
-    // Desenhar o tabuleiro/estado atual
-    draw_board(game_board, draw_mode);
+void *ncurses_thread(void *arg)
+{
+    ncurses_args_t *args = (ncurses_args_t *)arg;
+    board_t *game_board = args->game_board;
+    pthread_t *pacman_tid = args->pacman_tid;
+    int *accumulated_points = args->accumulated_points;
+    bool *quit_game = args->quit_game;
 
-    // Libertar o lock
-    pthread_rwlock_unlock(&game_board->mutex);
+    *quit_game = false;
 
-    // Atualizar o ecrã ncurses
-    refresh_screen();
+    while (true)
+    {
+        // A. Ler estado do jogo (com lock de leitura)
+        pthread_rwlock_rdlock(&game_board->mutex);
+        int running = game_board->game_running;
+        int is_alive = game_board->pacmans[0].alive;
+        *accumulated_points = game_board->pacmans[0].points;
+        pthread_rwlock_unlock(&game_board->mutex);
+
+        // B. Verificar fim de jogo / fim de nível
+        if (!is_alive || !running)
+        {
+            if (!is_alive)
+            {
+                // Pacman morreu
+                screen_refresh(game_board, DRAW_GAME_OVER);
+                sleep_ms(2000);
+                if (backup_exists)
+                    _exit(1); // filho com backup: sinaliza morte ao pai
+                *quit_game = true;
+            }
+            else
+            {
+                // Passou de nível (running = 0, alive = 1)
+                screen_refresh(game_board, DRAW_WIN);
+                sleep_ms(1500);
+            }
+
+            break;
+        }
+
+        // C. Ler input do jogador
+        char input = get_input();
+
+        // Sair do jogo
+        if (input == 'Q')
+        {
+            pthread_rwlock_wrlock(&game_board->mutex);
+            game_board->game_running = 0;
+            pthread_rwlock_unlock(&game_board->mutex);
+
+            *quit_game = true;
+            break;
+        }
+
+        // Guardar estado (reencarnação) – tecla G
+        if (input == 'G')
+        {
+            if (!backup_exists)
+            {
+                // 1) Parar todas as threads ANTES do fork
+                pthread_rwlock_wrlock(&game_board->mutex);
+                game_board->game_running = 0;
+                pthread_rwlock_unlock(&game_board->mutex);
+
+                // 2) Esperar que todas as threads terminem
+                pthread_join(*pacman_tid, NULL);
+                for (int i = 0; i < game_board->n_ghosts; i++)
+                {
+                    pthread_join(game_board->ghosts[i].thread_id, NULL);
+                }
+
+                // 3) Criar processo filho com o estado atual
+                int pid = fork();
+
+                if (pid == 0)
+                {
+                    // FILHO: continua o jogo a partir do backup
+                    backup_exists = 1;
+                    game_board->game_running = 1;
+                    game_board->pacmans[0].alive = 1; // garantir que o Pacman está vivo
+
+                    // Recriar threads dos fantasmas
+                    for (int i = 0; i < game_board->n_ghosts; i++)
+                    {
+                        game_board->ghosts[i].board_ref = (struct board_t *)game_board;
+                        game_board->ghosts[i].id = i;
+                        pthread_create(&game_board->ghosts[i].thread_id,
+                                       NULL, ghost_thread, &game_board->ghosts[i]);
+                    }
+
+                    // Recriar thread do Pacman
+                    pthread_create(pacman_tid, NULL, pacman_thread, game_board);
+
+                    // Filho continua a jogar normalmente
+                    continue;
+                }
+                else if (pid > 0)
+                {
+                    // PAI: espera pelo filho
+                    backup_exists = 1;
+                    int status;
+                    wait(&status);
+
+                    if (WIFEXITED(status) && WEXITSTATUS(status) == 1)
+                    {
+                        // Filho morreu -> reencarnar na posição salva
+                        backup_exists = 0;
+                        game_board->game_running = 1;
+                        game_board->pacmans[0].alive = 1;
+
+                        // Recriar threads no pai
+                        for (int i = 0; i < game_board->n_ghosts; i++)
+                        {
+                            game_board->ghosts[i].board_ref = (struct board_t *)game_board;
+                            game_board->ghosts[i].id = i;
+                            pthread_create(&game_board->ghosts[i].thread_id,
+                                           NULL, ghost_thread, &game_board->ghosts[i]);
+                        }
+
+                        pthread_create(pacman_tid, NULL, pacman_thread, game_board);
+                        continue; // volta ao loop (reencarnado)
+                    }
+                    else
+                    {
+                        // Filho completou o nível com sucesso
+                        *quit_game = true;
+                        break;
+                    }
+                }
+                else
+                {
+                    // Erro no fork: tenta recuperar e seguir em frente
+                    perror("Fork failed");
+                    pthread_rwlock_wrlock(&game_board->mutex);
+                    game_board->game_running = 1;
+                    pthread_rwlock_unlock(&game_board->mutex);
+                    backup_exists = 0;
+                }
+            }
+        }
+        else if (input != '\0')
+        {
+            // Movimento manual do Pacman
+            pthread_rwlock_wrlock(&game_board->mutex);
+            game_board->next_pacman_move = input;
+            pthread_rwlock_unlock(&game_board->mutex);
+        }
+
+        // D. Atualizar o ecrã
+        screen_refresh(game_board, DRAW_MENU);
+    }
+
+    free(args);
+    return NULL;
 }
 
 int main(int argc, char **argv)
@@ -247,127 +398,22 @@ int main(int argc, char **argv)
         pthread_t pacman_tid;
         pthread_create(&pacman_tid, NULL, pacman_thread, &game_board);
 
-        ncurses_threads(&game_board, DRAW_MENU);
+        // Preparar argumentos para a thread ncurses
+        ncurses_args_t *ncurses_args = (ncurses_args_t *)malloc(sizeof(ncurses_args_t));
+        ncurses_args->game_board = &game_board;
+        ncurses_args->pacman_tid = &pacman_tid;
+        ncurses_args->accumulated_points = &accumulated_points;
+        ncurses_args->quit_game = &quit_game;
 
-        while (true)
-        {
-            pthread_rwlock_rdlock(&game_board.mutex);
-            int running = game_board.game_running;
-            int is_alive = game_board.pacmans[0].alive;
-            accumulated_points = game_board.pacmans[0].points;
-            pthread_rwlock_unlock(&game_board.mutex);
+        // Desenho inicial
+        screen_refresh(&game_board, DRAW_MENU);
 
-            if (!is_alive || !running)
-            {
-                if (!is_alive)
-                {
-                    screen_refresh(&game_board, DRAW_GAME_OVER);
-                    sleep_ms(2000);
-                    if (backup_exists)
-                        _exit(1); // Backup: sinalizar morte ao pai
-                    quit_game = true;
-                }
-                else
-                {
-                    // Passou de nível (running=0, alive=1)
-                    screen_refresh(&game_board, DRAW_WIN);
-                    sleep_ms(1500);
-                }
-                break;
-            }
+        // Criar thread ncurses (input/lógica de jogo)
+        pthread_t ncurses_tid;
+        pthread_create(&ncurses_tid, NULL, ncurses_thread, ncurses_args);
 
-            char input = get_input();
-            if (input == 'Q')
-            {
-                pthread_rwlock_wrlock(&game_board.mutex);
-                game_board.game_running = 0;
-                quit_game = true;
-                pthread_rwlock_unlock(&game_board.mutex);
-                break;
-            }
-            if (input == 'G')
-            {
-                if (!backup_exists)
-                {
-                    // Parar todas as threads ANTES de fazer fork
-                    pthread_rwlock_wrlock(&game_board.mutex);
-                    game_board.game_running = 0;
-                    pthread_rwlock_unlock(&game_board.mutex);
-
-                    // Join de todas as threads
-                    pthread_join(pacman_tid, NULL);
-                    for (int i = 0; i < game_board.n_ghosts; i++)
-                    {
-                        pthread_join(game_board.ghosts[i].thread_id, NULL);
-                    }
-
-                    // Agora fork é seguro (sem threads activas)
-                    int pid = fork();
-                    if (pid == 0)
-                    {
-                        // FILHO: reinicia o jogo a partir do estado atual
-                        backup_exists = 1;
-                        game_board.game_running = 1;
-                        game_board.pacmans[0].alive = 1; // Reencarnar pacman
-
-                        // Recriar threads no filho
-                        for (int i = 0; i < game_board.n_ghosts; i++)
-                        {
-                            game_board.ghosts[i].board_ref = (struct board_t *)&game_board;
-                            game_board.ghosts[i].id = i;
-                            pthread_create(&game_board.ghosts[i].thread_id, NULL, ghost_thread, &game_board.ghosts[i]);
-                        }
-                        pthread_create(&pacman_tid, NULL, pacman_thread, &game_board);
-
-                        // Continua o loop inner (jogo continua)
-                        continue;
-                    }
-                    else if (pid > 0)
-                    {
-                        // PAI: espera pelo filho
-                        backup_exists = 1;
-                        int status;
-                        wait(&status);
-                        if (WIFEXITED(status) && WEXITSTATUS(status) == 1)
-                        {
-                            // Filho morreu -> reencarnar na posição salva
-                            backup_exists = 0;
-                            game_board.game_running = 1;
-                            game_board.pacmans[0].alive = 1; // Reencarnar
-
-                            // Recriar threads no pai
-                            for (int i = 0; i < game_board.n_ghosts; i++)
-                            {
-                                game_board.ghosts[i].board_ref = (struct board_t *)&game_board;
-                                game_board.ghosts[i].id = i;
-                                pthread_create(&game_board.ghosts[i].thread_id, NULL, ghost_thread, &game_board.ghosts[i]);
-                            }
-                            pthread_create(&pacman_tid, NULL, pacman_thread, &game_board);
-                            continue; // Reencarnar
-                        }
-                        else
-                        {
-                            // Filho completou o nível com sucesso
-                            quit_game = true;
-                            break;
-                        }
-                    }
-                    else
-                    {
-                        perror("Fork failed");
-                    }
-                }
-            }
-            else if (input != '\0')
-            {
-                pthread_rwlock_wrlock(&game_board.mutex);
-                game_board.next_pacman_move = input;
-                pthread_rwlock_unlock(&game_board.mutex);
-            }
-
-            // D. Desenhar
-            screen_refresh(&game_board, DRAW_MENU);
-        }
+        // Esperar pela thread ncurses terminar
+        pthread_join(ncurses_tid, NULL);
 
         // Limpeza
         game_board.game_running = 0;
