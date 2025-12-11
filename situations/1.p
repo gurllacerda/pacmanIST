@@ -14,7 +14,6 @@ D
 A
 D
 W
-T 2
 S
 S
 D

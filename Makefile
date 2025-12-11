@@ -1,7 +1,7 @@
 # Compiler variables
 CC = gcc
-CFLAGS = -g -Wall -Wextra -Werror -std=c17 -D_POSIX_C_SOURCE=200809L 
-LDFLAGS = -lncurses 
+CFLAGS = -g -Wall -Wextra -Werror -std=c17 -D_POSIX_C_SOURCE=200809L -pthread
+LDFLAGS = -lncurses -pthread
 
 # CFLAGS = -g -Wall -Wextra -Werror -std=c17 -D_POSIX_C_SOURCE=200809L -fsanitize=thread
 # LDFLAGS = -lncurses -fsanitize=thread -no-pie
