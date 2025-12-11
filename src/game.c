@@ -29,7 +29,6 @@ void screen_refresh(board_t *game_board, int mode)
     pthread_mutex_unlock(&game_board->ncurses_mutex);
     pthread_rwlock_unlock(&game_board->mutex);
 
-    
     if (game_board->tempo != 0)
         sleep_ms(game_board->tempo);
 }
@@ -143,26 +142,32 @@ void *pacman_thread(void *arg)
 
         pthread_rwlock_wrlock(&board->mutex);
 
-        if (!board->game_running || !pacman->alive) {
+        if (!board->game_running || !pacman->alive)
+        {
             pthread_rwlock_unlock(&board->mutex);
             break;
         }
 
-        if (pacman->n_moves > 0){
+        if (pacman->n_moves > 0)
+        {
             cmd_ptr = &pacman->moves[pacman->current_move % pacman->n_moves];
         }
-        else{
+        else
+        {
             cmd_ptr = &manual_cmd;
-            if (board->next_pacman_move != '\0'){
+            if (board->next_pacman_move != '\0')
+            {
                 cmd_ptr->command = board->next_pacman_move;
                 board->next_pacman_move = '\0';
             }
         }
 
-        if (cmd_ptr->command != '\0'){
+        if (cmd_ptr->command != '\0')
+        {
             result = move_pacman(board, 0, cmd_ptr);
-            
-            if (result == REACHED_PORTAL){
+
+            if (result == REACHED_PORTAL)
+            {
                 board->game_running = 0;
             }
         }
@@ -184,7 +189,7 @@ void *ncurses_thread_nova(void *arg)
         pthread_rwlock_rdlock(&board->mutex);
         pthread_mutex_lock(&board->ncurses_mutex);
 
-        draw_board(board, DRAW_MENU);        
+        draw_board(board, DRAW_MENU);
         refresh_screen();
 
         pthread_mutex_unlock(&board->ncurses_mutex);
@@ -223,7 +228,8 @@ int main(int argc, char **argv)
     int current_level_idx = 0;
     bool quit_game = false;
 
-    while (current_level_idx < num_levels && !quit_game){
+    while (current_level_idx < num_levels && !quit_game)
+    {
         board_t game_board;
         char full_path[512];
         snprintf(full_path, sizeof(full_path), "%s/%s", levels_directory, level_files[current_level_idx]);
@@ -237,7 +243,7 @@ int main(int argc, char **argv)
         if (game_board.n_pacmans > 0)
             game_board.pacmans[0].points = accumulated_points;
 
-        //Threads Fantasmas
+        // Threads Fantasmas
         for (int i = 0; i < game_board.n_ghosts; i++)
         {
             game_board.ghosts[i].board_ref = (struct board_t *)&game_board;
@@ -266,14 +272,16 @@ int main(int argc, char **argv)
 
             if (!is_alive || !running)
             {
-                if (!is_alive){
+                if (!is_alive)
+                {
                     screen_refresh(&game_board, DRAW_GAME_OVER);
                     sleep_ms(2000);
                     if (backup_exists)
                         _exit(1); // filho com backup: sinaliza morte ao pai
                     quit_game = true;
                 }
-                else{
+                else
+                {
                     screen_refresh(&game_board, DRAW_WIN);
                     sleep_ms(1500);
                 }
@@ -285,7 +293,15 @@ int main(int argc, char **argv)
             char input = get_input();
             pthread_mutex_unlock(&game_board.ncurses_mutex);
 
-            if (input == 'Q')
+            int pacman_manual = 0;
+            pthread_rwlock_rdlock(&game_board.mutex);
+            if (game_board.n_pacmans > 0 && game_board.pacmans[0].n_moves == 0)
+            {
+                pacman_manual = 1;
+            }
+            pthread_rwlock_unlock(&game_board.mutex);
+
+            if (pacman_manual && input == 'Q')
             {
                 pthread_rwlock_wrlock(&game_board.mutex);
                 game_board.game_running = 0;
@@ -294,8 +310,10 @@ int main(int argc, char **argv)
                 break;
             }
 
-            if (input == 'G'){
-                if (!backup_exists){
+            if (pacman_manual && input == 'G')
+            {
+                if (!backup_exists)
+                {
                     // Parar todas as threads ANTES do fork
                     pthread_rwlock_wrlock(&game_board.mutex);
                     game_board.game_running = 0;
@@ -309,7 +327,6 @@ int main(int argc, char **argv)
                         pthread_join(game_board.ghosts[i].thread_id, NULL);
                     }
 
-                    
                     int pid = fork();
 
                     if (pid == 0)
@@ -325,7 +342,7 @@ int main(int argc, char **argv)
                             game_board.ghosts[i].board_ref = (struct board_t *)&game_board;
                             game_board.ghosts[i].id = i;
                             pthread_create(&game_board.ghosts[i].thread_id,
-                                         NULL, ghost_thread, &game_board.ghosts[i]);
+                                           NULL, ghost_thread, &game_board.ghosts[i]);
                         }
 
                         // Recriar thread do Pacman
@@ -334,7 +351,6 @@ int main(int argc, char **argv)
                         // Recriar thread ncurses
                         pthread_create(&ncurses_tid, NULL, ncurses_thread_nova, &game_board);
 
-                        
                         continue;
                     }
                     else if (pid > 0)
@@ -357,7 +373,7 @@ int main(int argc, char **argv)
                                 game_board.ghosts[i].board_ref = (struct board_t *)&game_board;
                                 game_board.ghosts[i].id = i;
                                 pthread_create(&game_board.ghosts[i].thread_id,
-                                             NULL, ghost_thread, &game_board.ghosts[i]);
+                                               NULL, ghost_thread, &game_board.ghosts[i]);
                             }
 
                             pthread_create(&pacman_tid, NULL, pacman_thread, &game_board);
@@ -399,12 +415,11 @@ int main(int argc, char **argv)
         }
 
         // Limpeza
-        pthread_rwlock_wrlock(&game_board.mutex); 
+        pthread_rwlock_wrlock(&game_board.mutex);
         game_board.game_running = 0;
-        pthread_rwlock_unlock(&game_board.mutex); 
+        pthread_rwlock_unlock(&game_board.mutex);
         pthread_join(ncurses_tid, NULL);
         pthread_join(pacman_tid, NULL);
-
 
         for (int i = 0; i < game_board.n_ghosts; i++)
         {
