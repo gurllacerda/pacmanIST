@@ -82,14 +82,14 @@ void load_entity_behavior(const char *path, board_t *board, char type, int index
         p = &board->pacmans[index];
         moves_array = p->moves;
         n_moves_ptr = &p->n_moves;
-        p->n_moves = 0; // Reset
+        p->n_moves = 0; 
     }
     else
     {
         g = &board->ghosts[index];
         moves_array = g->moves;
         n_moves_ptr = &g->n_moves;
-        g->n_moves = 0; // Reset
+        g->n_moves = 0; 
     }
 
     while (get_next_token(fd, token, sizeof(token)))
@@ -128,8 +128,7 @@ void load_entity_behavior(const char *path, board_t *board, char type, int index
             {
                 char cmd = token[0];
                 int turns = 1;
-                if (cmd == 'T')
-                {
+                if (cmd == 'T'){
                     if (strlen(token) > 1)
                     {
                         // Exemplo: T2

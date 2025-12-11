@@ -33,68 +33,6 @@ void screen_refresh(board_t *game_board, int mode)
         sleep_ms(game_board->tempo);
 }
 
-// int play_board(board_t *game_board)
-// {
-//     pacman_t *pacman = &game_board->pacmans[0];
-//     command_t *play;
-//     if (pacman->n_moves == 0)
-//     { // if is user input
-//         command_t c;
-//         c.command = get_input();
-
-//         // debug("RAW INPUT: %d ('%c')\n", (int)c.command, c.command); para debug
-
-//         if (c.command == '\0')
-//             return CONTINUE_PLAY;
-
-//         if (c.command == 'G')
-//         {
-//             // Só deixa criar backup se ainda não existir nenhum
-//             if (!backup_exists)
-//                 return CREATE_BACKUP;
-//             else
-//                 return CONTINUE_PLAY; // ignora se já houver backup
-//         }
-
-//         c.turns = 1;
-//         play = &c;
-//     }
-//     else
-//     {
-//         // avoid buffer overflow wrapping around with modulo of n_moves
-//         // this ensures that we always access a valid move for the pacman
-//         play = &pacman->moves[pacman->current_move % pacman->n_moves];
-//     }
-
-//     debug("KEY %c\n", play->command);
-
-//     if (play->command == 'Q')
-//     {
-//         return QUIT_GAME;
-//     }
-
-//     pthread_rwlock_wrlock(&game_board->mutex);
-//     int result = move_pacman(game_board, 0, play);
-//     pthread_rwlock_unlock(&game_board->mutex);
-
-//     if (result == REACHED_PORTAL)
-//     {
-//         // Next level
-//         return NEXT_LEVEL;
-//     }
-
-//     if (result == DEAD_PACMAN)
-//     {
-//         return QUIT_GAME;
-//     }
-//     if (!game_board->pacmans[0].alive)
-//     {
-//         return QUIT_GAME;
-//     }
-
-//     return CONTINUE_PLAY;
-// }
-
 void *ghost_thread(void *arg)
 {
     ghost_t *ghost = (ghost_t *)arg;
@@ -131,48 +69,68 @@ void *pacman_thread(void *arg)
     board_t *board = (board_t *)arg;
     pacman_t *pacman = &board->pacmans[0];
 
-    while (board->game_running && pacman->alive)
-    {
+    while (board->game_running && pacman->alive){
+
         command_t *cmd_ptr = NULL;
         command_t manual_cmd;
         manual_cmd.turns = 1;
         manual_cmd.turns_left = 1;
         manual_cmd.command = '\0';
-        int result = 0; // Variável para guardar o resultado
+        int result = 0; 
 
         pthread_rwlock_wrlock(&board->mutex);
 
-        if (!board->game_running || !pacman->alive)
-        {
+        if (!board->game_running || !pacman->alive){
             pthread_rwlock_unlock(&board->mutex);
             break;
         }
 
-        if (pacman->n_moves > 0)
-        {
+        if (pacman->n_moves > 0){
             cmd_ptr = &pacman->moves[pacman->current_move % pacman->n_moves];
-        }
-        else
-        {
+        } else{
             cmd_ptr = &manual_cmd;
-            if (board->next_pacman_move != '\0')
-            {
+            if (board->next_pacman_move != '\0'){
                 cmd_ptr->command = board->next_pacman_move;
                 board->next_pacman_move = '\0';
             }
         }
 
-        if (cmd_ptr->command != '\0')
-        {
+        char cmd = cmd_ptr->command;
+        if (cmd == 'Q') {
+            board->exit_request = 1;
+            board->game_running = 0;
+            pthread_rwlock_unlock(&board->mutex);
+            break; 
+        }
+        else if (cmd == 'G') {
+            if (!backup_exists) { 
+                board->backup_request = 1; // Sinaliza o Main
+                
+                pthread_rwlock_unlock(&board->mutex);
+                
+                while(board->backup_request && board->game_running) {
+                    sleep_ms(10);
+                }
+                
+                // Avança o movimento manualmente para não ficar preso no 'G' para sempre
+                if (pacman->n_moves > 0) {
+                     pacman->current_move++; 
+                }
+                continue; 
+            } else {
+                if (pacman->n_moves > 0) pacman->current_move++;
+            }
+        } else if (cmd_ptr->command != '\0'){
             result = move_pacman(board, 0, cmd_ptr);
-
             if (result == REACHED_PORTAL)
             {
                 board->game_running = 0;
             }
         }
 
-        pthread_rwlock_unlock(&board->mutex);
+        if (cmd != 'G' && cmd != 'Q') {
+            pthread_rwlock_unlock(&board->mutex);
+        }
 
         int sleep_time = (board->tempo > 0) ? board->tempo : 100;
         sleep_ms(sleep_time);
@@ -180,12 +138,10 @@ void *pacman_thread(void *arg)
     return NULL;
 }
 
-void *ncurses_thread_nova(void *arg)
-{
+void *ncurses_thread_nova(void *arg){
     board_t *board = (board_t *)arg;
 
-    while (board->game_running && board->pacmans[0].alive)
-    {
+    while (board->game_running && board->pacmans[0].alive){
         pthread_rwlock_rdlock(&board->mutex);
         pthread_mutex_lock(&board->ncurses_mutex);
 
@@ -228,8 +184,7 @@ int main(int argc, char **argv)
     int current_level_idx = 0;
     bool quit_game = false;
 
-    while (current_level_idx < num_levels && !quit_game)
-    {
+    while (current_level_idx < num_levels && !quit_game){
         board_t game_board;
         char full_path[512];
         snprintf(full_path, sizeof(full_path), "%s/%s", levels_directory, level_files[current_level_idx]);
@@ -239,6 +194,8 @@ int main(int argc, char **argv)
 
         game_board.next_pacman_move = '\0';
         game_board.game_running = 1;
+        // game_board.backup_request = 0; 
+        game_board.exit_request = 0;
         pthread_mutex_init(&game_board.ncurses_mutex, NULL);
         if (game_board.n_pacmans > 0)
             game_board.pacmans[0].points = accumulated_points;
@@ -262,26 +219,26 @@ int main(int argc, char **argv)
         // Desenho inicial
         screen_refresh(&game_board, DRAW_MENU);
 
-        while (game_board.game_running)
-        {
+        while (1){
             pthread_rwlock_rdlock(&game_board.mutex);
             int running = game_board.game_running;
             int is_alive = game_board.pacmans[0].alive;
+            int exit_req = game_board.exit_request;
             accumulated_points = game_board.pacmans[0].points;
             pthread_rwlock_unlock(&game_board.mutex);
 
-            if (!is_alive || !running)
-            {
-                if (!is_alive)
-                {
+            if (exit_req) {
+                quit_game = true; 
+                break;            
+            }
+            if (!is_alive || !running){
+                if (!is_alive){
                     screen_refresh(&game_board, DRAW_GAME_OVER);
                     sleep_ms(2000);
                     if (backup_exists)
                         _exit(1); // filho com backup: sinaliza morte ao pai
                     quit_game = true;
-                }
-                else
-                {
+                } else{
                     screen_refresh(&game_board, DRAW_WIN);
                     sleep_ms(1500);
                 }
@@ -301,8 +258,7 @@ int main(int argc, char **argv)
             }
             pthread_rwlock_unlock(&game_board.mutex);
 
-            if (pacman_manual && input == 'Q')
-            {
+            if (pacman_manual && input == 'Q'){
                 pthread_rwlock_wrlock(&game_board.mutex);
                 game_board.game_running = 0;
                 pthread_rwlock_unlock(&game_board.mutex);
@@ -310,10 +266,14 @@ int main(int argc, char **argv)
                 break;
             }
 
-            if (pacman_manual && input == 'G')
-            {
-                if (!backup_exists)
-                {
+            int request_auto_backup = 0;
+            
+            pthread_rwlock_rdlock(&game_board.mutex);
+            if (game_board.backup_request) request_auto_backup = 1;
+            pthread_rwlock_unlock(&game_board.mutex);
+
+            if ((pacman_manual && input == 'G') || (request_auto_backup)){
+                if (!backup_exists){
                     // Parar todas as threads ANTES do fork
                     pthread_rwlock_wrlock(&game_board.mutex);
                     game_board.game_running = 0;
@@ -322,15 +282,13 @@ int main(int argc, char **argv)
                     // Esperar que todas as threads terminem
                     pthread_join(ncurses_tid, NULL);
                     pthread_join(pacman_tid, NULL);
-                    for (int i = 0; i < game_board.n_ghosts; i++)
-                    {
+                    for (int i = 0; i < game_board.n_ghosts; i++){
                         pthread_join(game_board.ghosts[i].thread_id, NULL);
                     }
 
                     int pid = fork();
-
-                    if (pid == 0)
-                    {
+                    game_board.backup_request = 0;
+                    if (pid == 0){
                         // FILHO: continua o jogo a partir do backup
                         backup_exists = 1;
                         game_board.game_running = 1;
@@ -352,16 +310,13 @@ int main(int argc, char **argv)
                         pthread_create(&ncurses_tid, NULL, ncurses_thread_nova, &game_board);
 
                         continue;
-                    }
-                    else if (pid > 0)
-                    {
+                    }else if (pid > 0) {
                         // PAI: espera pelo filho
                         backup_exists = 1;
                         int status;
                         wait(&status);
 
-                        if (WIFEXITED(status) && WEXITSTATUS(status) == 1)
-                        {
+                        if (WIFEXITED(status) && WEXITSTATUS(status) == 1){
                             // Filho morreu -> reencarnar na posição salva
                             backup_exists = 0;
                             game_board.game_running = 1;
@@ -380,8 +335,7 @@ int main(int argc, char **argv)
                             pthread_create(&ncurses_tid, NULL, ncurses_thread_nova, &game_board);
                             continue; // volta ao loop (reencarnado)
                         }
-                        else
-                        {
+                        else{
                             // Filho completou o nível com sucesso
                             quit_game = true;
                             break;

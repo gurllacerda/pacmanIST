@@ -73,6 +73,9 @@ typedef struct
     pthread_mutex_t ncurses_mutex;      // mutex for ncurses synchronization
     int game_running;
     char next_pacman_move;
+
+    int backup_request;  //create just to solve the problem that we can have G and Q commands in the file .p
+    int exit_request;
 } board_t;
 
 // Struct para passar argumentos à thread ncurses
