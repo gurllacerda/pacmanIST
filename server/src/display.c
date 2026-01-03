@@ -1,5 +1,5 @@
-#include "display.h"
-#include "board.h"
+#include "../include/display.h"
+#include "../include/board.h"
 #include <stdlib.h>
 #include <ctype.h>
 

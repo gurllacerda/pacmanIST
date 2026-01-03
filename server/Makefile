@@ -31,16 +31,15 @@ all: pacmanist
 pacmanist: $(BIN_DIR)/$(TARGET)
 
 $(BIN_DIR)/$(TARGET): $(OBJS) | folders
-	$(CC) $(CFLAGS) $(SLEEP) $(addprefix $(OBJ_DIR)/,$(OBJS)) -o $@ $(LDFLAGS)
+	$(CC) $(CFLAGS) $(addprefix $(OBJ_DIR)/,$(OBJS)) -o $@ $(LDFLAGS)
 
 # dont include LDFLAGS in the end, to allow compilation on macos
 %.o: %.c $($@) | folders
 	$(CC) -I $(INCLUDE_DIR) $(CFLAGS) -o $(OBJ_DIR)/$@ -c $<
 
-# run the program
-# add situations because it is our dir folder 
+# run the server
 run: pacmanist
-	@./$(BIN_DIR)/$(TARGET) situations
+	@./$(BIN_DIR)/$(TARGET) situations 10 /tmp/pacman_register
 
 # Create folders
 folders:
@@ -58,9 +57,9 @@ clean:
 
 # Executar com GDB
 gdb: pacmanist
-	gdb --args ./$(BIN_DIR)/$(TARGET) situations
+	gdb --args ./$(BIN_DIR)/$(TARGET) situations 10 /tmp/pacman_register
 
 # Executar com Valgrind (guarda log em ficheiro)
 valgrind: pacmanist
-	valgrind --leak-check=full --track-origins=yes --log-file=valgrind-log.txt ./$(BIN_DIR)/$(TARGET) situations
+	valgrind --leak-check=full --track-origins=yes --log-file=valgrind-log.txt ./$(BIN_DIR)/$(TARGET) situations 10 /tmp/pacman_register
 

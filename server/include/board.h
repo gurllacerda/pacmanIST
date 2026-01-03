@@ -76,6 +76,9 @@ typedef struct
 
     int backup_request;  //create just to solve the problem that we can have G and Q commands in the file .p
     int exit_request;
+
+    int client_req_fd;
+    int client_notif_fd;
 } board_t;
 
 // Struct para passar argumentos à thread ncurses
