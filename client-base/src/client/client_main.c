@@ -17,6 +17,45 @@ bool stop_execution = false;
 int tempo = 200;
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
+
+int get_next_token(FILE *fd, char *buffer, int max_len) {
+    char c;
+    int idx = 0;
+    int in_comment = 0;
+    int bytes_read; 
+
+   
+    while ((c = fgetc(fd)) != EOF) {
+        if (c == '#') {
+            in_comment = 1;
+            continue;
+        }
+        if (in_comment) {
+            if (c == '\n') in_comment = 0;
+            continue;
+        }
+
+        if (isspace(c)) {
+            if (idx > 0) {
+                buffer[idx] = '\0';
+                return 1; 
+            }
+            continue;
+        }
+
+        if (idx < max_len - 1) {
+            buffer[idx++] = c;
+        }
+    }
+
+    if (idx > 0) {
+        buffer[idx] = '\0';
+        return 1;
+    }
+    return 0; 
+}
+
+
 static void *receiver_thread(void *arg) {
     (void)arg;
 
@@ -31,15 +70,28 @@ static void *receiver_thread(void *arg) {
             break;
         }
 
-        debug("Received board: %dx%d, data=%p, game_over=%d\n", 
-              board.width, board.height, board.data, board.game_over);
-
         pthread_mutex_lock(&mutex);
         tempo = board.tempo;
         pthread_mutex_unlock(&mutex);
 
         draw_board_client(board);
         refresh_screen();
+
+        if (board.game_over) {
+            
+            // Opcional: Dar um pequeno sleep para o utilizador ver a mensagem de Vitória/Game Over
+            // antes do programa fechar (ex: 2 ou 3 segundos)
+            sleep_ms(2000); 
+
+            pthread_mutex_lock(&mutex);
+            stop_execution = true;
+            pthread_mutex_unlock(&mutex);
+            
+            free(board.data);
+            break; // Sai do loop
+        }
+
+        free(board.data);
     }
 
     debug("Returning receiver thread...\n");
@@ -94,59 +146,47 @@ int main(int argc, char *argv[]) {
     char command;
     int ch;
 
+    char token[128];
     while (1) {
+        
 
-        pthread_mutex_lock(&mutex);
-        if (stop_execution) {
-            pthread_mutex_unlock(&mutex);
-            break;  
-        }
-        pthread_mutex_unlock(&mutex);
+        char command = '\0';
 
         if (cmd_fp) {
-            // Input from file
-            ch = fgetc(cmd_fp);
-
-            if (ch == EOF) {
-                // Restart at the start of the file
-                rewind(cmd_fp);
+            if (get_next_token(cmd_fp, token, sizeof(token)) == 0) {
+                rewind(cmd_fp); 
+                continue;
+            }
+            
+            if (strcmp(token, "PASSO") == 0) {
+                get_next_token(cmd_fp, token, sizeof(token)); 
+                continue; 
+            }
+            if (strcmp(token, "POS") == 0) {
+                get_next_token(cmd_fp, token, sizeof(token)); 
+                get_next_token(cmd_fp, token, sizeof(token)); 
                 continue;
             }
 
-            command = (char)ch;
-
-            if (command == '\n' || command == '\r' || command == '\0')
-                continue;
-
-            command = toupper(command);
+            command = toupper(token[0]);
             
-            // Wait for tempo, to not overflow pipe with requests
             pthread_mutex_lock(&mutex);
             int wait_for = tempo;
             pthread_mutex_unlock(&mutex);
-
             sleep_ms(wait_for);
-            
+
         } else {
-            // Interactive input
             command = get_input();
             command = toupper(command);
         }
 
-        if (command == '\0')
-            continue;
-
-        if (command == 'Q') {
-            debug("Client pressed 'Q', quitting game\n");
-            break;
-        }
-
-        debug("Command: %c\n", command);
-
+        if (command == '\0') continue;
+        
         pacman_play(command);
-
+        
+        if (command == 'Q') break;
     }
-
+    
     pacman_disconnect();
 
     pthread_join(receiver_thread_id, NULL);
@@ -157,6 +197,7 @@ int main(int argc, char *argv[]) {
     pthread_mutex_destroy(&mutex);
 
     terminal_cleanup();
+    
 
     return 0;
 }

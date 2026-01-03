@@ -71,8 +71,9 @@ void send_board_to_client(board_t *board) {
 
     // Protocolo: OP_CODE | width | height | tempo | victory | game_over | points | DATA
     char op = OP_CODE_BOARD;
-    int victory = 0; 
-    int game_over = !board->pacmans[0].alive; 
+    // int victory = 0; 
+    int game_over = (!board->pacmans[0].alive) && (board->game_running);
+    int victory = (!board->game_running) && (board->pacmans[0].alive) && (!board->exit_request); 
     int points = (board->n_pacmans > 0) ? board->pacmans[0].points : 0;
 
     pthread_mutex_lock(&board->ncurses_mutex); 
@@ -228,7 +229,7 @@ void run_session(int req_fd, int notif_fd, char *levels_dir) {
         snprintf(full_path, sizeof(full_path), "%s/%s", levels_dir, level_files[current_level]);
 
         if (load_level_from_file(full_path, &board, levels_dir) != 0) break;
-        // if (board.n_pacmans > 0) board.pacmans[0].n_moves = 0;//forçando a leitura dos movimentos do cliente
+        if (board.n_pacmans > 0) board.pacmans[0].n_moves = 0;//forçando a leitura dos movimentos do cliente
 
         board.client_req_fd = req_fd;
         board.client_notif_fd = notif_fd;
@@ -317,8 +318,6 @@ int main(int argc, char *argv[]) {
             
             printf("Cliente a conectar-se: Req='%s' Notif='%s'\n", req_pipe, notif_pipe);
 
-            
-            
             int notif_fd = open(notif_pipe, O_WRONLY);
             char ack_op = OP_CODE_CONNECT;
             char result = 0; 
