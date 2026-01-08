@@ -111,7 +111,10 @@ void *client_input_handler(void *arg)
         char op, cmd;
         int n = read(board->client_req_fd, &op, sizeof(char));
         if (n <= 0)
+        {
+            board->exit_request = 1;
             break;
+        }
 
         if (op == OP_CODE_DISCONNECT)
         {

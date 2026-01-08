@@ -99,14 +99,15 @@ int pacman_connect(char const *req_pipe_path, char const *notif_pipe_path, char 
   return 0;
 }
 
-void pacman_play(char command)
+int pacman_play(char command)
 {
   if (session.req_pipe == -1)
-    return;
+    return 1;
 
   char op = OP_CODE_PLAY;
   write(session.req_pipe, &op, sizeof(char));
   write(session.req_pipe, &command, sizeof(char));
+  return 0;
 }
 
 int pacman_disconnect()
