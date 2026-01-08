@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <sys/stat.h>
 #include <stdlib.h>
+#include <errno.h>
 
 struct Session
 {
@@ -19,6 +20,23 @@ struct Session
 };
 
 static struct Session session = {.id = -1, .req_pipe = -1, .notif_pipe = -1};
+
+static int write_full(int fd, const void *buf, size_t n)
+{
+  size_t off = 0;
+  while (off < n)
+  {
+    ssize_t w = write(fd, (const char *)buf + off, n - off);
+    if (w < 0)
+    {
+      if (errno == EINTR)
+        continue;
+      return -1;
+    }
+    off += (size_t)w;
+  }
+  return 0;
+}
 
 static void sent_fixed_string(int fd, const char *str)
 {
@@ -58,8 +76,14 @@ int pacman_connect(char const *req_pipe_path, char const *notif_pipe_path, char 
     return 1;
   }
 
-  char op = OP_CODE_CONNECT;
-  if (write(server_fd, &op, sizeof(char)) == -1)
+  unsigned char msg[1 + MAX_PIPE_PATH_LENGTH + MAX_PIPE_PATH_LENGTH];
+  memset(msg, 0, sizeof(msg));
+  msg[0] = (unsigned char)OP_CODE_CONNECT;
+
+  strncpy((char *)msg + 1, req_pipe_path, MAX_PIPE_PATH_LENGTH - 1);
+  strncpy((char *)msg + 1 + MAX_PIPE_PATH_LENGTH, notif_pipe_path, MAX_PIPE_PATH_LENGTH - 1);
+
+  if (write_full(server_fd, msg, sizeof(msg)) != 0)
   {
     perror("Erro ao escrever no server pipe");
     close(server_fd);
