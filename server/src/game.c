@@ -205,6 +205,7 @@ void send_board_to_client(board_t *board)
     int points = (board->n_pacmans > 0) ? board->pacmans[0].points : 0;
 
     pthread_mutex_lock(&board->ncurses_mutex);
+    pthread_rwlock_rdlock(&board->mutex);
 
     write(board->client_notif_fd, &op, sizeof(char));
     write(board->client_notif_fd, &width, sizeof(int));
@@ -215,6 +216,7 @@ void send_board_to_client(board_t *board)
     write(board->client_notif_fd, &points, sizeof(int));
     write(board->client_notif_fd, data, size);
 
+    pthread_rwlock_unlock(&board->mutex);
     pthread_mutex_unlock(&board->ncurses_mutex);
 
     free(data);
