@@ -13,12 +13,55 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <semaphore.h>
+#include <signal.h> 
+#include <pthread.h> 
 
 #define CONTINUE_PLAY 0
 #define NEXT_LEVEL 1
 #define QUIT_GAME 2
 #define LOAD_BACKUP 3
 #define CREATE_BACKUP 4
+
+static volatile sig_atomic_t g_sigusr1_received = 0;
+
+// Estrutura para registar um jogo ativo
+typedef struct {
+    int client_id;
+    board_t *board_ref; 
+    int active;         
+} active_game_t;
+
+static active_game_t *g_active_games = NULL;
+static int g_max_games_config = 0;
+static pthread_mutex_t g_games_registry_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void handle_sigusr1(int signum) {
+    (void)signum; // Ignora warning de variável não usada
+    g_sigusr1_received = 1;
+}
+
+// Função auxiliar para extrair o ID numérico do nome do pipe.
+int extract_id_from_path(const char *pipe_path) {
+    const char *filename = strrchr(pipe_path, '/');
+    if (filename) {
+        filename++; 
+    } else {
+        filename = pipe_path; 
+    }
+    
+    const char *underscore = strchr(filename, '_');
+    if (!underscore) return -1; // Formato inválido
+    
+    char id_str[32];
+    int len = underscore - filename;
+    if (len >= 32) len = 31; 
+    
+    strncpy(id_str, filename, len);
+    id_str[len] = '\0';
+    
+    return atoi(id_str);
+}
+
 
 typedef struct
 {
@@ -36,9 +79,6 @@ typedef struct
     pthread_mutex_t mtx;
     sem_t has_items;
 
-    // IMPORTANTE:
-    // este semáforo representa "slots de sessão disponíveis" (max_games).
-    // Só é libertado (sem_post) quando uma sessão termina.
     sem_t has_space;
 } request_queue_t;
 
@@ -559,6 +599,59 @@ static void *session_worker_thread(void *arg)
     return NULL;
 }
 
+int compare_scores(const void *a, const void *b) {
+    active_game_t *gameA = (active_game_t *)a;
+    active_game_t *gameB = (active_game_t *)b;
+    
+    int scoreA = 0, scoreB = 0;
+    
+    if (gameA->board_ref && gameA->board_ref->n_pacmans > 0)
+        scoreA = gameA->board_ref->pacmans[0].points;
+        
+    if (gameB->board_ref && gameB->board_ref->n_pacmans > 0)
+        scoreB = gameB->board_ref->pacmans[0].points;
+
+    return scoreB - scoreA; 
+}
+
+void generate_top5_log() {
+    pthread_mutex_lock(&g_games_registry_mutex);
+
+    // 1. Copiar jogos ativos para um array temporário para ordenar
+    int count = 0;
+    active_game_t temp_list[g_max_games_config];
+    
+    for (int i = 0; i < g_max_games_config; i++) {
+        if (g_active_games[i].active && g_active_games[i].board_ref) {
+            temp_list[count] = g_active_games[i];
+            count++;
+        }
+    }
+    
+    qsort(temp_list, count, sizeof(active_game_t), compare_scores);
+    
+    FILE *f = fopen("top5_gamers.txt", "w");
+    if (f) {
+        fprintf(f, "--- TOP 5 JOGADORES ---\n");
+        int limit = (count < 5) ? count : 5;
+        for (int i = 0; i < limit; i++) {
+            int score = 0;
+            if(temp_list[i].board_ref->n_pacmans > 0)
+                score = temp_list[i].board_ref->pacmans[0].points;
+                
+            fprintf(f, "Rank %d: Cliente ID %d - Pontos: %d\n", 
+                    i+1, temp_list[i].client_id, score);
+        }
+        if (count == 0) fprintf(f, "Nenhum jogo ativo no momento.\n");
+        fclose(f);
+        printf("Log 'top5_gamers.txt' gerado com sucesso.\n");
+    } else {
+        perror("Erro ao criar log");
+    }
+
+    pthread_mutex_unlock(&g_games_registry_mutex);
+}
+
 int main(int argc, char *argv[])
 {
     if (argc != 4)
@@ -577,31 +670,51 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    
+    g_max_games_config = max_games;
+    g_active_games = calloc(max_games, sizeof(active_game_t));
+    if (!g_active_games) {
+        perror("Erro ao alocar memória para registo de jogos");
+        return 1;
+    }
+
+  
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGUSR1);
+    if (pthread_sigmask(SIG_BLOCK, &mask, NULL) != 0) {
+        perror("Falha ao bloquear SIGUSR1");
+        free(g_active_games);
+        return 1;
+    }
+
     unlink(g_register_pipe);
     if (mkfifo(g_register_pipe, 0666) != 0)
     {
         perror("Erro ao criar pipe de registo");
+        free(g_active_games);
         return 1;
     }
 
     printf("Servidor PacmanIST iniciado no pipe '%s'\n", g_register_pipe);
+    printf("PID do Servidor: %d (Use 'kill -SIGUSR1 %d' para gerar log)\n", getpid(), getpid());
+
     open_debug_file("server_debug.log");
 
     if (queue_init(&g_queue, max_games) != 0)
     {
         fprintf(stderr, "Falha a inicializar buffer produtor-consumidor.\n");
         unlink(g_register_pipe);
+        free(g_active_games);
         return 1;
     }
 
-    // criar workers (pool fixo)
     for (int i = 0; i < max_games; i++)
     {
         pthread_t tid;
         if (pthread_create(&tid, NULL, session_worker_thread, NULL) != 0)
         {
             perror("pthread_create worker");
-            // em caso de falha, continua; mas idealmente abortar
         }
         else
         {
@@ -609,22 +722,22 @@ int main(int argc, char *argv[])
         }
     }
 
-    // criar host
     pthread_t host_tid;
     if (pthread_create(&host_tid, NULL, host_thread, NULL) != 0)
     {
         perror("pthread_create host");
         queue_destroy(&g_queue);
         unlink(g_register_pipe);
+        free(g_active_games);
         return 1;
     }
 
-    // o servidor fica a correr
     pthread_join(host_tid, NULL);
 
-    // nunca chega aqui, mas por completude:
     queue_destroy(&g_queue);
     close_debug_file();
     unlink(g_register_pipe);
+    free(g_active_games); // Libertar memória global
+
     return 0;
 }
