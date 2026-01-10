@@ -62,7 +62,6 @@ int extract_id_from_path(const char *pipe_path) {
     return atoi(id_str);
 }
 
-
 typedef struct
 {
     char req_pipe[40];
@@ -415,190 +414,6 @@ void *pacman_thread(void *arg)
     return NULL;
 }
 
-static void *host_thread(void *arg)
-{
-    (void)arg;
-
-    int fd_r = open(g_register_pipe, O_RDONLY);
-    if (fd_r < 0)
-    {
-        perror("host_thread: open register_pipe (read)");
-        return NULL;
-    }
-
-    // manter FIFO “vivo” para evitar EOF quando não há clientes
-    int fd_w_dummy = open(g_register_pipe, O_WRONLY | O_NONBLOCK);
-    (void)fd_w_dummy; // pode falhar, mas não é crítico
-
-    while (1)
-    {
-        char op = 0;
-        ssize_t n = read_full(fd_r, &op, sizeof(char));
-        if (n <= 0)
-        {
-            if (n < 0 && errno == EINTR)
-                continue;
-            // se acontecer EOF, tenta continuar
-            continue;
-        }
-
-        if (op != OP_CODE_CONNECT)
-        {
-            // ignorar outros opcodes no FIFO de registo
-            continue;
-        }
-
-        session_request_t req;
-        memset(&req, 0, sizeof(req));
-
-        if (read_full(fd_r, req.req_pipe, 40) != 40)
-            continue;
-        if (read_full(fd_r, req.notif_pipe, 40) != 40)
-            continue;
-
-        // garantir terminação (por segurança)
-        req.req_pipe[39] = '\0';
-        req.notif_pipe[39] = '\0';
-
-        queue_push_blocking(&g_queue, &req);
-    }
-
-    // nunca chega aqui
-    // close(fd_r);
-    // if (fd_w_dummy >= 0) close(fd_w_dummy);
-    // return NULL;
-}
-
-void run_session(int req_fd, int notif_fd, char *levels_dir)
-{
-    char level_files[MAX_LEVELS][MAX_FILENAME];
-    int num_levels = 0;
-    if (load_levels_from_dir(levels_dir, level_files, &num_levels) != 0)
-        return;
-
-    int current_level = 0;
-    int points = 0;
-
-    while (current_level < num_levels)
-    {
-        board_t board;
-        char full_path[512];
-        snprintf(full_path, sizeof(full_path), "%s/%s", levels_dir, level_files[current_level]);
-
-        if (load_level_from_file(full_path, &board, levels_dir) != 0)
-            break;
-        if (board.n_pacmans > 0)
-            board.pacmans[0].n_moves = 0; // forçando a leitura dos movimentos do cliente
-
-        board.client_req_fd = req_fd;
-        board.client_notif_fd = notif_fd;
-        board.game_running = 1;
-        board.exit_request = 0;
-        board.next_pacman_move = '\0';
-        if (board.n_pacmans > 0)
-            board.pacmans[0].points = points;
-
-        pthread_rwlock_init(&board.mutex, NULL);
-        pthread_mutex_init(&board.ncurses_mutex, NULL);
-
-        pthread_t tid_pacman, tid_input;
-        pthread_create(&tid_pacman, NULL, pacman_thread, &board);
-        pthread_create(&tid_input, NULL, client_input_handler, &board); // Nova thread de input
-
-        for (int i = 0; i < board.n_ghosts; i++)
-        {
-            board.ghosts[i].board_ref = (struct board_t *)&board;
-            board.ghosts[i].id = i;
-            pthread_create(&board.ghosts[i].thread_id, NULL, ghost_thread, &board.ghosts[i]);
-        }
-
-        while (1)
-        {
-            pthread_rwlock_rdlock(&board.mutex);
-            int running = board.game_running;
-            int alive = (board.n_pacmans > 0) ? board.pacmans[0].alive : 0;
-            points = (board.n_pacmans > 0) ? board.pacmans[0].points : 0;
-            int exit_req = board.exit_request;
-            pthread_rwlock_unlock(&board.mutex);
-
-            if (!running || !alive || exit_req)
-                break;
-
-            send_board_to_client(&board);
-
-            sleep_ms(50);
-        }
-
-        board.game_running = 0;
-        pthread_join(tid_pacman, NULL);
-        pthread_join(tid_input, NULL);
-        for (int i = 0; i < board.n_ghosts; i++)
-            pthread_join(board.ghosts[i].thread_id, NULL);
-
-        send_board_to_client(&board);
-
-        int must_exit = board.exit_request;
-        int pacman_dead = (board.n_pacmans > 0) ? !board.pacmans[0].alive : 1;
-
-        pthread_mutex_destroy(&board.ncurses_mutex);
-        unload_level(&board);
-
-        if (must_exit || pacman_dead)
-            break;
-
-        current_level++;
-    }
-}
-
-static void *session_worker_thread(void *arg)
-{
-    (void)arg;
-
-    while (1)
-    {
-        session_request_t req = queue_pop_blocking(&g_queue);
-
-        int notif_fd = open(req.notif_pipe, O_WRONLY);
-        if (notif_fd == -1)
-        {
-            // cliente desapareceu / fifo não existe → libertar slot
-            sem_post(&g_queue.has_space);
-            continue;
-        }
-
-        // ACK de conexão (OP_CODE=1 | result)
-        char ack_op = OP_CODE_CONNECT;
-        char result = 0;
-
-        if (write_full(notif_fd, &ack_op, sizeof(char)) != (ssize_t)sizeof(char) ||
-            write_full(notif_fd, &result, sizeof(char)) != (ssize_t)sizeof(char))
-        {
-            close(notif_fd);
-            sem_post(&g_queue.has_space);
-            continue;
-        }
-
-        // abrir FIFO de pedidos (vai desbloquear quando o cliente abrir o writer)
-        int req_fd = open(req.req_pipe, O_RDONLY);
-        if (req_fd == -1)
-        {
-            close(notif_fd);
-            sem_post(&g_queue.has_space);
-            continue;
-        }
-
-        run_session(req_fd, notif_fd, (char *)g_levels_dir);
-
-        close(req_fd);
-        close(notif_fd);
-
-        // sessão terminou → libertar “slot” para nova sessão
-        sem_post(&g_queue.has_space);
-    }
-
-    return NULL;
-}
-
 int compare_scores(const void *a, const void *b) {
     active_game_t *gameA = (active_game_t *)a;
     active_game_t *gameB = (active_game_t *)b;
@@ -617,7 +432,7 @@ int compare_scores(const void *a, const void *b) {
 void generate_top5_log() {
     pthread_mutex_lock(&g_games_registry_mutex);
 
-    // 1. Copiar jogos ativos para um array temporário para ordenar
+    
     int count = 0;
     active_game_t temp_list[g_max_games_config];
     
@@ -650,6 +465,237 @@ void generate_top5_log() {
     }
 
     pthread_mutex_unlock(&g_games_registry_mutex);
+}
+
+static void *host_thread(void *arg)
+{
+    (void)arg;
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handle_sigusr1;
+    sigaction(SIGUSR1, &sa, NULL);
+
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGUSR1);
+    if (pthread_sigmask(SIG_UNBLOCK, &mask, NULL) != 0) {
+        perror("host_thread: falha ao desbloquear SIGUSR1");
+    }
+
+    int fd_r = open(g_register_pipe, O_RDONLY);
+    if (fd_r < 0)
+    {
+        perror("host_thread: open register_pipe (read)");
+        return NULL;
+    }
+
+    // manter FIFO “vivo” para evitar EOF quando não há clientes
+    int fd_w_dummy = open(g_register_pipe, O_WRONLY | O_NONBLOCK);
+    (void)fd_w_dummy; // pode falhar, mas não é crítico
+
+    // --- 3. LOOP DE ATENDIMENTO (CORRIGIDO) ---
+    while (1)
+    {
+        // 1. Verificar o sinal ANTES de tentar ler
+        if (g_sigusr1_received) {
+            g_sigusr1_received = 0;
+            generate_top5_log();
+        }
+
+        char op = 0;
+        
+        // 2. Usar read() direto em vez de read_full() para apanhar o EINTR
+        // Lemos apenas 1 byte (o OP CODE)
+        ssize_t n = read(fd_r, &op, sizeof(char));
+        
+        if (n < 0) {
+            if (errno == EINTR) {
+                // O sinal interrompeu o read. 
+                // O 'continue' faz o loop voltar ao início, 
+                // onde o 'if (g_sigusr1_received)' vai ser executado!
+                continue; 
+            }
+            // Outros erros reais (ignorar ou tratar)
+            continue; 
+        }
+        
+        if (n == 0) continue; // EOF
+
+        if (op != OP_CODE_CONNECT) continue; // Ignorar lixo
+
+        // Se chegámos aqui, temos um pedido real.
+        // Agora sim, usamos read_full para o resto da mensagem (que tem tamanho fixo)
+        session_request_t req;
+        memset(&req, 0, sizeof(req));
+
+        if (read_full(fd_r, req.req_pipe, 40) != 40) continue;
+        if (read_full(fd_r, req.notif_pipe, 40) != 40) continue;
+
+        req.req_pipe[39] = '\0';
+        req.notif_pipe[39] = '\0';
+
+        queue_push_blocking(&g_queue, &req);
+    }
+    // nunca chega aqui
+    // close(fd_r);
+    // if (fd_w_dummy >= 0) close(fd_w_dummy);
+    // return NULL;
+}
+
+void run_session(int req_fd, int notif_fd, char *levels_dir, int client_id)
+{
+    char level_files[MAX_LEVELS][MAX_FILENAME];
+    int num_levels = 0;
+    if (load_levels_from_dir(levels_dir, level_files, &num_levels) != 0)
+        return;
+
+    int current_level = 0;
+    int points = 0;
+
+    while (current_level < num_levels)
+    {
+        board_t board;
+        char full_path[512];
+        snprintf(full_path, sizeof(full_path), "%s/%s", levels_dir, level_files[current_level]);
+
+        if (load_level_from_file(full_path, &board, levels_dir) != 0)
+            break;
+            
+        if (board.n_pacmans > 0)
+            board.pacmans[0].n_moves = 0; 
+
+        board.client_req_fd = req_fd;
+        board.client_notif_fd = notif_fd;
+        board.game_running = 1;
+        board.exit_request = 0;
+        board.next_pacman_move = '\0';
+        if (board.n_pacmans > 0)
+            board.pacmans[0].points = points;
+
+        int my_slot = -1;
+        pthread_mutex_lock(&g_games_registry_mutex);
+        for (int i = 0; i < g_max_games_config; i++)
+        {
+            if (!g_active_games[i].active)
+            {
+                g_active_games[i].active = 1;
+                g_active_games[i].client_id = client_id;
+                g_active_games[i].board_ref = &board; 
+                my_slot = i;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&g_games_registry_mutex);
+
+        pthread_rwlock_init(&board.mutex, NULL);
+        pthread_mutex_init(&board.ncurses_mutex, NULL);
+
+        pthread_t tid_pacman, tid_input;
+        pthread_create(&tid_pacman, NULL, pacman_thread, &board);
+        pthread_create(&tid_input, NULL, client_input_handler, &board); 
+
+        for (int i = 0; i < board.n_ghosts; i++)
+        {
+            board.ghosts[i].board_ref = (struct board_t *)&board;
+            board.ghosts[i].id = i;
+            pthread_create(&board.ghosts[i].thread_id, NULL, ghost_thread, &board.ghosts[i]);
+        }
+
+        while (1)
+        {
+            pthread_rwlock_rdlock(&board.mutex);
+            int running = board.game_running;
+            int alive = (board.n_pacmans > 0) ? board.pacmans[0].alive : 0;
+            points = (board.n_pacmans > 0) ? board.pacmans[0].points : 0;
+            int exit_req = board.exit_request;
+            pthread_rwlock_unlock(&board.mutex);
+
+            if (!running || !alive || exit_req)
+                break;
+
+            send_board_to_client(&board);
+            sleep_ms(50);
+        }
+
+        board.game_running = 0;
+        
+        pthread_join(tid_pacman, NULL);
+        pthread_join(tid_input, NULL);
+        for (int i = 0; i < board.n_ghosts; i++)
+            pthread_join(board.ghosts[i].thread_id, NULL);
+
+        if (my_slot != -1)
+        {
+            pthread_mutex_lock(&g_games_registry_mutex);
+            g_active_games[my_slot].active = 0;
+            g_active_games[my_slot].board_ref = NULL; 
+            pthread_mutex_unlock(&g_games_registry_mutex);
+        }
+
+        send_board_to_client(&board);
+
+        int must_exit = board.exit_request;
+        int pacman_dead = (board.n_pacmans > 0) ? !board.pacmans[0].alive : 1;
+
+        pthread_mutex_destroy(&board.ncurses_mutex);
+        unload_level(&board);
+
+        if (must_exit || pacman_dead)
+            break;
+
+        current_level++;
+    }
+}
+
+static void *session_worker_thread(void *arg)
+{
+    (void)arg;
+
+    while (1)
+    {
+        session_request_t req = queue_pop_blocking(&g_queue);
+
+        int notif_fd = open(req.notif_pipe, O_WRONLY);
+        if (notif_fd == -1)
+        {
+            sem_post(&g_queue.has_space);
+            continue;
+        }
+
+        // ACK de conexão (OP_CODE=1 | result)
+        char ack_op = OP_CODE_CONNECT;
+        char result = 0;
+
+        if (write_full(notif_fd, &ack_op, sizeof(char)) != (ssize_t)sizeof(char) ||
+            write_full(notif_fd, &result, sizeof(char)) != (ssize_t)sizeof(char))
+        {
+            close(notif_fd);
+            sem_post(&g_queue.has_space);
+            continue;
+        }
+
+        // abrir FIFO de pedidos (vai desbloquear quando o cliente abrir o writer)
+        int req_fd = open(req.req_pipe, O_RDONLY);
+        if (req_fd == -1)
+        {
+            close(notif_fd);
+            sem_post(&g_queue.has_space);
+            continue;
+        }
+
+        //Extrair o ID do cliente a partir do nome do pipe
+        int client_id = extract_id_from_path(req.req_pipe);
+
+        run_session(req_fd, notif_fd, (char *)g_levels_dir, client_id);
+
+        close(req_fd);
+        close(notif_fd);
+
+        sem_post(&g_queue.has_space);
+    }
+
+    return NULL;
 }
 
 int main(int argc, char *argv[])
