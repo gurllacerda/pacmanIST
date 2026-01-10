@@ -152,16 +152,11 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    pthread_t receiver_thread_id;
-    pthread_create(&receiver_thread_id, NULL, receiver_thread, NULL);
-
     terminal_init();
     set_timeout(50);
-    draw_board_client(board);
-    refresh_screen();
 
-    // char command;
-    // int ch;
+    pthread_t receiver_thread_id;
+    pthread_create(&receiver_thread_id, NULL, receiver_thread, NULL);
 
     char token[128];
     while (1)
@@ -215,17 +210,17 @@ int main(int argc, char *argv[])
         if (command == '\0')
             continue;
 
-        pacman_play(command);
-
-        if (command == 'Q')
-            break;
-
         if (should_stop())
         {
             sleep_ms(2000);
             terminal_cleanup();
             break;
         }
+
+        pacman_play(command);
+
+        if (command == 'Q')
+            break;
     }
     pacman_disconnect();
 

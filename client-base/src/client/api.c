@@ -128,9 +128,13 @@ int pacman_play(char command)
   if (session.req_pipe == -1)
     return 1;
 
-  char op = OP_CODE_PLAY;
-  write(session.req_pipe, &op, sizeof(char));
-  write(session.req_pipe, &command, sizeof(char));
+  unsigned char msg[2];
+  msg[0] = (unsigned char)OP_CODE_PLAY;
+  msg[1] = (unsigned char)command;
+
+  if (write(session.req_pipe, msg, sizeof(msg)) < 0)
+    return 1;
+
   return 0;
 }
 
